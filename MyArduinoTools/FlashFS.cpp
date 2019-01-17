@@ -110,7 +110,7 @@ const FlashFS::FileEntry* FlashFS::fileEntry(int idx)
 	return m_dir.files + idx;
 }
 
-bool FlashFS::exists(const char* fileName)
+bool FlashFS::exists(const char* fileName) const
 {
 	return findFile(fileName) >= 0;
 }

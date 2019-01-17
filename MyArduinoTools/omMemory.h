@@ -6,6 +6,7 @@
 namespace om {
 
 // provides some lightweight stl replacements
+extern int debug;
 
 template<typename T>
 void _element_destructor(T* ptr)
@@ -74,6 +75,11 @@ public:
 	T& operator[](uint32_t i) const
 	{
 		return m_ptr[i];
+	}
+
+	unique_ptr move()
+	{
+		return unique_ptr(release());
 	}
 
 	T* release()

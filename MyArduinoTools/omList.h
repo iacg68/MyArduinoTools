@@ -29,10 +29,6 @@ public:
 		iterator()
 		{}
 
-		iterator(Node *ptr) 
-			: m_node(ptr) 
-		{}
-		
 		T &operator*() const
 		{ 
 			return m_node->data; 
@@ -107,10 +103,12 @@ public:
 
 	private:
 		friend class list<T>;
+		iterator(Node *ptr) 
+			: m_node(ptr) 
+		{}
+
 		Node *m_node {nullptr};
 	};
-
-	using Compare = bool(*)(const T &a, const T &b);
 
 	list()
 	{}

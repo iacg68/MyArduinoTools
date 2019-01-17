@@ -64,13 +64,6 @@ public:
 	static const int ERROR_DIR_TABLE_FULL		= -7;
 	static const int ERROR_NOT_ENOUGH_SPACE		= -8;
 
-	struct GapInfo
-	{
-		int			insertAt;
-		uint32_t	startAddress;
-		uint32_t	gapSize;
-	};
-
 	struct FileEntry
 	{
 		uint32_t	startAddress;				// 4 bytes
@@ -107,7 +100,7 @@ public:
 	const FileEntry* fileEntry(int idx);
 
 	// files:
-	bool exists(const char* fileName);
+	bool exists(const char* fileName) const;
 	int deleteFile(const char* fileName);
 	int createFile(const char* fileName, uint32_t size);
 	int openFile(const char* fileName);
@@ -128,7 +121,7 @@ public:
 
 	// usable for mem-copyable data
 	template<typename T>
-	int write(T data)
+	int write(const T &data)
 	{
 		return write(&data, sizeof(T));
 	}
@@ -145,7 +138,19 @@ public:
 		return data;
 	}
 
+	template<typename T>
+	int read(T &data)
+	{
+		return read(&data, sizeof(T));
+	}
+
 private:
+	struct GapInfo
+	{
+		int			insertAt;
+		uint32_t	startAddress;
+		uint32_t	gapSize;
+	};
 
 	struct Directory {
 		uint32_t	magicID;				//   4 bytes
