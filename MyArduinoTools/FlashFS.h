@@ -5,6 +5,17 @@
 
 namespace om {
 
+// defining FS_USE_SEPARATE_FILE extracts all file handling stuff related to its
+// content into separated class File. For backwards compatibility, where flashFs
+// was doing the stuff, comment it out.
+#define FS_USE_SEPARATE_FILE
+
+#if defined (__arm__) && defined (__SAM3X8E__)
+	#define FS_PACKED	__attribute__((packed))
+#else
+	#define FS_PACKED
+#endif
+
 // FlashFS requires at least 2k x 8 eeproms, since the directory takes already 320 bytes.
 
 // one adress byte inline
@@ -64,12 +75,12 @@ public:
 	static const int ERROR_DIR_TABLE_FULL		= -7;
 	static const int ERROR_NOT_ENOUGH_SPACE		= -8;
 
-	struct FileEntry
+	struct FS_PACKED FileEntry 
 	{
 		uint32_t	startAddress;				// 4 bytes
 		char		name[MAXNAMELEN+1];			// 10 bytes
 		uint32_t	size;						// 4 bytes
-	};	// 18 bytes
+	} ;					// 18 bytes
 
 	FlashFS(uint8_t deviceAddress, uint32_t deviceSize, uint8_t pageSize);
 
@@ -97,16 +108,24 @@ public:
 		return m_dir.numFiles;
 	}
 
-	const FileEntry* fileEntry(int idx);
+	uint8_t pageSize() const
+	{
+		return m_pageSize;
+	}
+
+	const FileEntry* fileEntry(int idx) const;
 
 	// files:
 	bool exists(const char* fileName) const;
 	int deleteFile(const char* fileName);
+	
+#ifndef FS_USE_SEPARATE_FILE
 	int createFile(const char* fileName, uint32_t size);
 	int openFile(const char* fileName);
 	int cleanFile(uint32_t fillWord = 0x0);
 	void close();
 
+	// --> moved to class File
 	// data:
 	bool eof() const;
 	uint32_t pos() const
@@ -143,8 +162,17 @@ public:
 	{
 		return read(&data, sizeof(T));
 	}
+#endif
 
 private:
+	friend class File;
+	const FileEntry* grantFileAccess();
+
+#ifdef FS_USE_SEPARATE_FILE
+	int createFile(const char* fileName, uint32_t size);
+	int openFile(const char* fileName);
+#endif
+
 	struct GapInfo
 	{
 		int			insertAt;
@@ -152,14 +180,15 @@ private:
 		uint32_t	gapSize;
 	};
 
-	struct Directory {
+	struct FS_PACKED Directory
+	{
 		uint32_t	magicID;				//   4 bytes
 		uint16_t	version;				//   2 bytes
 		char		name[MAXNAMELEN+1];		//  10 bytes
 		uint16_t	reserved[6];			//   2 bytes x 6
 		uint32_t	numFiles;				//   4 bytes
 		FileEntry	files[MAXFILEENTRIES];	//  18 bytes x 16
-	};										// 320 bytes
+	};				// 320 bytes
 
 	// helper
 	int latchError(int val) const;
@@ -182,7 +211,77 @@ private:
 
 	Directory	m_dir;
 	int32_t		m_openFile;
+#ifndef FS_USE_SEPARATE_FILE
 	uint32_t	m_filePos;
+#endif
+};
+
+class File
+{
+public:
+	File();
+	File(const File& other);
+	File(const char* fileName);
+	File(const char* fileName, uint32_t size);
+	
+	int	lastError() const
+	{
+		return m_lastError;
+	}
+	
+	int createFile(const char* fileName, uint32_t size);
+	int openFile(const char* fileName);
+	int cleanFile(uint32_t fillWord = 0x0);
+	void close();
+
+	// data:
+	bool eof() const;
+	uint32_t pos() const
+	{
+		return m_filePos;
+	}
+	uint32_t setPos(int32_t pos);
+	uint32_t movePos(int32_t offset);
+	uint32_t size() const
+	{
+		return m_fileSize;
+	}
+
+	// generic: write block of data to sequential file
+	int write(const void* data, uint32_t size);
+
+	// usable for mem-copyable data
+	template<typename T>
+	int write(const T &data)
+	{
+		return write(&data, sizeof(T));
+	}
+
+	// generic: read block of data from sequential file
+	int read(void* data, uint32_t size);
+	
+	// usable for mem-copyable data
+	template<typename T>
+	T read()
+	{
+		T data;
+		read(&data, sizeof(T));
+		return data;
+	}
+
+	template<typename T>
+	int read(T &data)
+	{
+		return read(&data, sizeof(T));
+	}
+
+private:	
+	int latchError(int val);
+
+	int			m_lastError{FlashFS::ERROR_NONE};
+	uint32_t	m_address{0x0};
+	uint32_t	m_filePos{0x0};
+	uint32_t	m_fileSize{0x0};
 };
 
 }

@@ -39,9 +39,12 @@ bool FlashFS::openDevice(uint8_t deviceAddress, uint32_t deviceSize, uint8_t pag
 
 bool FlashFS::openDevice()
 {
-	// read version and directory start
+#ifndef FS_USE_SEPARATE_FILE
 	close();
-
+#else
+	m_openFile = -1;
+#endif
+	// read version and directory start
 	memset(&m_dir, 0, sizeof(Directory));	// restart from scratch
 	read(0x0, reinterpret_cast<char*>(&m_dir), sizeof(Directory));
 
@@ -52,7 +55,11 @@ bool FlashFS::openDevice()
 
 void FlashFS::format(const char* storageName)
 {
+#ifndef FS_USE_SEPARATE_FILE
 	close();
+#else
+	m_openFile = -1;
+#endif
 	memset(&m_dir, 0, sizeof(Directory));	// restart from scratch
 
 	m_dir.magicID  = MAGIC_TLFILESYSTEM;	// "TLFS", const
@@ -103,11 +110,18 @@ void FlashFS::dir() const
 	Serial.println(dash);
 }
 
-const FlashFS::FileEntry* FlashFS::fileEntry(int idx)
+const FlashFS::FileEntry* FlashFS::fileEntry(int idx) const
 {
 	if ((idx < 0) || (uint32_t(idx) >= m_dir.numFiles))
 		return nullptr;
 	return m_dir.files + idx;
+}
+
+const FlashFS::FileEntry* FlashFS::grantFileAccess()
+{
+	auto current = fileEntry(m_openFile);
+	m_openFile = -1;
+	return current;
 }
 
 bool FlashFS::exists(const char* fileName) const
@@ -122,7 +136,11 @@ int FlashFS::deleteFile(const char* fileName)
 		return latchError(ERROR_FILE_NOT_FOUND);
 
 	if (m_openFile == idx)
+#ifndef FS_USE_SEPARATE_FILE
 		close(); // forced close.
+#else
+		m_openFile = -1;
+#endif
 
 	removeFilesEntry(idx);
 	writeDirectory();
@@ -169,13 +187,16 @@ int FlashFS::createFile(const char* fileName, uint32_t size)
 int FlashFS::openFile(const char* fileName)
 {
 	m_openFile = findFile(fileName);
+#ifndef FS_USE_SEPARATE_FILE
 	m_filePos = 0;
+#endif
 	if (m_openFile < 0)
 		return latchError(ERROR_FILE_NOT_FOUND);	// not found
 
 	return latchError(int(m_dir.files[m_openFile].size));
 }
 
+#ifndef FS_USE_SEPARATE_FILE
 int FlashFS::cleanFile(uint32_t fillWord)
 {
 	if (m_openFile < 0)
@@ -203,18 +224,24 @@ int FlashFS::cleanFile(uint32_t fillWord)
 	setPos(restorePos);
 	return latchError(m_dir.files[m_openFile].size);
 }
+#endif
 
+#ifndef FS_USE_SEPARATE_FILE
 void FlashFS::close()
 {
 	m_openFile = -1;
 	m_filePos = 0;
 }
+#endif
 
+#ifndef FS_USE_SEPARATE_FILE
 bool FlashFS::eof() const
 {
 	return (m_openFile < 0) || (m_filePos >= m_dir.files[m_openFile].size);
 }
+#endif
 
+#ifndef FS_USE_SEPARATE_FILE
 uint32_t FlashFS::setPos(int32_t pos)
 {
 	if (m_openFile < 0)
@@ -228,12 +255,16 @@ uint32_t FlashFS::setPos(int32_t pos)
 
 	return m_filePos;
 }
+#endif
 
+#ifndef FS_USE_SEPARATE_FILE
 uint32_t FlashFS::movePos(int32_t offset)
 {
 	return setPos(int(m_filePos) + offset);
 }
+#endif
 
+#ifndef FS_USE_SEPARATE_FILE
 int FlashFS::write(const void* data, uint32_t size)
 {
 	if (m_openFile < 0)
@@ -255,7 +286,9 @@ int FlashFS::write(const void* data, uint32_t size)
 	m_filePos += size;
 	return latchError(size);
 }
+#endif
 
+#ifndef FS_USE_SEPARATE_FILE
 int FlashFS::read(void* data, uint32_t size)
 {
 	if (m_openFile < 0)
@@ -273,6 +306,7 @@ int FlashFS::read(void* data, uint32_t size)
 	m_filePos += size;
 	return latchError(size);
 }
+#endif
 
 int FlashFS::latchError(int val) const
 {
@@ -515,7 +549,160 @@ void FlashFS::read(uint32_t address, char* data, uint32_t size)
 	}
 }
 
+// ==================================================================
+
+File::File()
+{
 }
+
+File::File(const File& other)
+	: m_lastError{other.m_lastError}
+	, m_address{other.m_address}
+	, m_filePos{other.m_filePos}
+	, m_fileSize{other.m_fileSize}
+{
+}
+
+File::File(const char* fileName)
+{
+	openFile(fileName);
+}
+
+File::File(const char* fileName, uint32_t size)
+{
+	createFile(fileName, size);
+}
+
+int File::createFile(const char* fileName, uint32_t size)
+{
+	const auto result = flashFs.createFile(fileName, size);
+	if (result < 0)
+		return latchError(result);
+
+	const auto entry = flashFs.grantFileAccess();
+	m_address  = entry->startAddress;
+	m_fileSize = entry->size;
+	return latchError(result);
+}
+
+int File::openFile(const char* fileName)
+{
+	const auto result = flashFs.openFile(fileName);
+	if (result < 0)
+		return latchError(result);
+	
+	const auto entry = flashFs.grantFileAccess();
+	m_address  = entry->startAddress;
+	m_fileSize = entry->size;
+	return latchError(result);
+}
+
+int File::cleanFile(uint32_t fillWord)
+{
+	if (m_address == 0x0)
+		latchError(FlashFS::ERROR_FILE_NOT_OPENED);
+
+	const int tempSize = flashFs.pageSize() / sizeof(uint32_t);
+	unique_ptr<uint32_t, _array_destructor> temp = new uint32_t[tempSize];
+	for(int i = 0; i < tempSize; ++i)
+		temp[i] = fillWord;
+	
+	const uint32_t restorePos = pos();
+
+	setPos(0);
+	uint32_t bytesToWrite = m_fileSize;
+	while (bytesToWrite > 0)
+	{
+		uint32_t chunkSize = bytesToWrite;
+		if (chunkSize > tempSize * sizeof(uint32_t))
+			chunkSize = tempSize * sizeof(uint32_t);
+		write(temp.get(), chunkSize);
+		bytesToWrite -= chunkSize;
+	}
+
+	// cleanup:
+	setPos(restorePos);
+	return latchError(m_fileSize);
+}
+
+void File::close()
+{
+	m_address = 0x0;
+	m_filePos = 0x0;
+	m_fileSize = 0x0;
+	latchError(FlashFS::ERROR_NONE);
+}
+
+// data:
+bool File::eof() const
+{
+	return (m_address == 0x0) 
+		|| (m_filePos >= m_fileSize);
+}
+
+uint32_t File::setPos(int32_t pos)
+{
+	if (m_address == 0x0)
+		latchError(FlashFS::ERROR_FILE_NOT_OPENED);
+	else if (pos < 0)
+		latchError(FlashFS::ERROR_POSITION_NEGATIVE);
+	else if (uint32_t(pos) < m_fileSize)
+		m_filePos = uint32_t(pos);
+	else
+		latchError(FlashFS::ERROR_POSITION_BEYOND_EOF);
+
+	return m_filePos;
+}
+
+uint32_t File::movePos(int32_t offset)
+{
+	return setPos(int(m_filePos) + offset);
+}
+
+// generic: write block of data to sequential file
+int File::write(const void* data, uint32_t size)
+{
+	if (m_address == 0x0)
+		return latchError(FlashFS::ERROR_FILE_NOT_OPENED);		// closed
+
+	// check available space
+	if (m_filePos + size > m_fileSize)
+		return latchError(FlashFS::ERROR_WRITING_BEYOND_EOF);	// not enough space
+
+	if (size == 0)
+		return latchError(0);
+
+	uint32_t addr = m_address + m_filePos;
+	flashFs.write(addr, reinterpret_cast<const char*>(data), size);
+	return latchError(size);
+}
+
+// generic: read block of data from sequential file
+int File::read(void* data, uint32_t size)
+{
+	if (m_address == 0x0)
+		return latchError(FlashFS::ERROR_FILE_NOT_OPENED);		// closed
+
+	// check available space
+	if (m_filePos + size > m_fileSize)
+		return latchError(FlashFS::ERROR_READING_BEYOND_EOF);	// not enough space
+
+	if (size == 0)
+		return latchError(0);
+
+	uint32_t addr = m_address + m_filePos;
+	flashFs.read(addr, reinterpret_cast<char*>(data), size);
+	m_filePos += size;
+	return latchError(size);
+}
+
+int File::latchError(int val)
+{
+	m_lastError = (val < 0) ? val : FlashFS::ERROR_NONE;
+	return val;
+}
+
+} // namespace
 
 // provide singleton
 om::FlashFS flashFs(0x50, EEPROMSize32k, 64);
